@@ -7,6 +7,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 use tracing::{error, warn};
 
+use crate::config::AgentOverrideConfig;
 use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::layout::{Node, PaneId, TileLayout};
@@ -38,6 +39,7 @@ struct RestoreRuntimeContext<'a> {
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'a>,
     resume_agents_on_restore: bool,
+    agent_overrides: &'a std::collections::BTreeMap<String, AgentOverrideConfig>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<AtomicBool>,
@@ -71,6 +73,7 @@ pub fn restore(
     default_shell: &str,
     shell_mode: crate::config::ShellModeConfig,
     resume_agents_on_restore: bool,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
     render_dirty: Arc<AtomicBool>,
@@ -84,6 +87,7 @@ pub fn restore(
         scrollback_limit_bytes,
         crate::pane::PaneShellConfig::new(default_shell, shell_mode),
         resume_agents_on_restore,
+        agent_overrides,
         &mut imported_panes,
         events,
         render_notify,
@@ -97,6 +101,7 @@ pub fn restore_handoff(
     scrollback_limit_bytes: usize,
     default_shell: &str,
     shell_mode: crate::config::ShellModeConfig,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
     imports: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -110,6 +115,7 @@ pub fn restore_handoff(
         scrollback_limit_bytes,
         crate::pane::PaneShellConfig::new(default_shell, shell_mode),
         true,
+        agent_overrides,
         imports,
         events,
         render_notify,
@@ -193,6 +199,7 @@ fn restore_with_imports_strict(
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -206,6 +213,7 @@ fn restore_with_imports_strict(
         scrollback_limit_bytes,
         shell_config,
         resume_agents_on_restore,
+        agent_overrides,
         imported_panes,
         events,
         render_notify,
@@ -233,6 +241,7 @@ fn restore_with_imports(
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -246,6 +255,7 @@ fn restore_with_imports(
         scrollback_limit_bytes,
         shell_config,
         resume_agents_on_restore,
+        agent_overrides,
         imported_panes,
         events,
         render_notify,
@@ -262,6 +272,7 @@ fn restore_with_imports_and_failures(
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
     imported_panes: &mut HashMap<u32, crate::handoff_runtime::ImportedHandoffRuntime>,
     events: mpsc::Sender<AppEvent>,
     render_notify: Arc<Notify>,
@@ -277,6 +288,7 @@ fn restore_with_imports_and_failures(
             scrollback_limit_bytes,
             shell_config,
             resume_agents_on_restore,
+            agent_overrides,
             events: events.clone(),
             render_notify: render_notify.clone(),
             render_dirty: render_dirty.clone(),
@@ -494,7 +506,12 @@ fn restore_tab(
                 enabled: runtime_context.resume_agents_on_restore,
                 resumed_sessions: resumed_agent_sessions,
             };
-            pane_restore_startup(saved_agent_session, saved_history, &mut agent_restore)
+            pane_restore_startup(
+                saved_agent_session,
+                saved_history,
+                &mut agent_restore,
+                runtime_context.agent_overrides,
+            )
         };
         let initial_restore_agent = startup
             .restore_plan
@@ -505,9 +522,18 @@ fn restore_tab(
         let public_pane_id = old_pane_id
             .and_then(|old_id| public_pane_ids_by_old_raw.get(&old_id))
             .map(String::as_str);
+        let override_agent_name = startup
+            .restore_plan
+            .as_ref()
+            .map(|p| p.agent.as_str())
+            .or(saved_agent_name.as_deref());
+        let override_env: Vec<(String, String)> = override_agent_name
+            .and_then(|name| runtime_context.agent_overrides.get(name))
+            .map(|o| o.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
         let launch_env = public_pane_id
             .map(|pane_id| {
-                PaneLaunchEnv::from_extra(Vec::new()).with_identity(
+                PaneLaunchEnv::from_extra(override_env).with_identity(
                     workspace_id.to_string(),
                     crate::workspace::public_tab_id_for_number(workspace_id, number),
                     pane_id.to_string(),
@@ -721,13 +747,15 @@ fn pane_restore_startup<'a>(
     session: Option<&PaneAgentSessionSnapshot>,
     history: Option<&'a PaneHistorySnapshot>,
     agent_restore: &mut AgentRestoreState<'_>,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
 ) -> PaneRestoreStartup<'a> {
     // Native agent resume owns the conversation history. If a pane has a
     // resumable agent session and resume is enabled, do not replay saved pane
     // presentation history into that terminal, even when this pane is a
     // duplicate suppressed by session de-duplication.
-    let restore_plan =
-        session.and_then(|session| restore_plan_for_snapshot(session, agent_restore.enabled));
+    let restore_plan = session.and_then(|session| {
+        restore_plan_for_snapshot(session, agent_restore.enabled, agent_overrides)
+    });
     let has_native_agent_restore = restore_plan.is_some();
     // Reserve before spawning so later panes in the same restore pass cannot
     // launch the same native agent session. The caller rolls this reservation
@@ -765,12 +793,21 @@ fn pane_restore_startup<'a>(
 fn restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
+    agent_overrides: &std::collections::BTreeMap<String, AgentOverrideConfig>,
 ) -> Option<crate::agent_resume::AgentResumePlan> {
     if !resume_agents_on_restore {
         return None;
     }
     let persisted = persisted_agent_session_from_snapshot(session)?;
-    crate::agent_resume::plan(&session.source, &session.agent, &persisted.session_ref)
+    let override_cmd = agent_overrides
+        .get(&session.agent)
+        .map(|o| o.command.as_str());
+    crate::agent_resume::plan(
+        &session.source,
+        &session.agent,
+        &persisted.session_ref,
+        override_cmd,
+    )
 }
 
 fn persisted_agent_session_from_snapshot(
@@ -800,8 +837,12 @@ fn take_restore_plan_for_snapshot(
     resume_agents_on_restore: bool,
     resumed_agent_sessions: &mut HashSet<String>,
 ) -> Option<crate::agent_resume::AgentResumePlan> {
-    restore_plan_for_snapshot(session, resume_agents_on_restore)
-        .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
+    restore_plan_for_snapshot(
+        session,
+        resume_agents_on_restore,
+        &std::collections::BTreeMap::new(),
+    )
+    .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
 }
 
 pub(super) fn prune_restored_node(node: Node, surviving: &HashSet<PaneId>) -> Option<Node> {
@@ -1000,9 +1041,14 @@ mod tests {
             value: pi_session_path.clone(),
         };
 
-        assert!(restore_plan_for_snapshot(&session, false).is_none());
+        assert!(
+            restore_plan_for_snapshot(&session, false, &std::collections::BTreeMap::new())
+                .is_none()
+        );
         assert_eq!(
-            restore_plan_for_snapshot(&session, true).unwrap().argv,
+            restore_plan_for_snapshot(&session, true, &std::collections::BTreeMap::new())
+                .unwrap()
+                .argv,
             vec!["pi", "--session", pi_session_path.as_str()]
         );
 
@@ -1012,7 +1058,12 @@ mod tests {
             kind: crate::agent_resume::AgentSessionRefKind::Path,
             value: test_session_path("claude-session"),
         };
-        assert!(restore_plan_for_snapshot(&unsupported_path, true).is_none());
+        assert!(restore_plan_for_snapshot(
+            &unsupported_path,
+            true,
+            &std::collections::BTreeMap::new()
+        )
+        .is_none());
     }
 
     #[test]
@@ -1056,7 +1107,12 @@ mod tests {
             resumed_sessions: &mut resumed,
         };
 
-        let startup = pane_restore_startup(Some(&session), Some(&history), &mut agent_restore);
+        let startup = pane_restore_startup(
+            Some(&session),
+            Some(&history),
+            &mut agent_restore,
+            &std::collections::BTreeMap::new(),
+        );
 
         assert!(startup.restore_plan.is_some());
         assert!(startup.initial_history_ansi.is_none());
@@ -1081,8 +1137,18 @@ mod tests {
             resumed_sessions: &mut resumed,
         };
 
-        let first = pane_restore_startup(Some(&session), Some(&history), &mut agent_restore);
-        let duplicate = pane_restore_startup(Some(&session), Some(&history), &mut agent_restore);
+        let first = pane_restore_startup(
+            Some(&session),
+            Some(&history),
+            &mut agent_restore,
+            &std::collections::BTreeMap::new(),
+        );
+        let duplicate = pane_restore_startup(
+            Some(&session),
+            Some(&history),
+            &mut agent_restore,
+            &std::collections::BTreeMap::new(),
+        );
 
         assert!(first.restore_plan.is_some());
         assert!(first.initial_history_ansi.is_none());
@@ -1109,7 +1175,12 @@ mod tests {
             resumed_sessions: &mut resumed,
         };
 
-        let startup = pane_restore_startup(Some(&session), Some(&history), &mut agent_restore);
+        let startup = pane_restore_startup(
+            Some(&session),
+            Some(&history),
+            &mut agent_restore,
+            &std::collections::BTreeMap::new(),
+        );
 
         assert!(startup.restore_plan.is_none());
         assert_eq!(startup.initial_history_ansi, Some("RESTORED_HISTORY\r\n"));
@@ -1203,6 +1274,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
+            &std::collections::BTreeMap::new(),
             events,
             Arc::new(Notify::new()),
             Arc::new(AtomicBool::new(false)),
@@ -1292,6 +1364,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
+            &std::collections::BTreeMap::new(),
             events,
             Arc::new(Notify::new()),
             Arc::new(AtomicBool::new(false)),
@@ -1397,6 +1470,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
+            &std::collections::BTreeMap::new(),
             events,
             Arc::new(Notify::new()),
             Arc::new(AtomicBool::new(false)),
@@ -1508,6 +1582,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             true,
+            &std::collections::BTreeMap::new(),
             events,
             Arc::new(Notify::new()),
             Arc::new(AtomicBool::new(false)),
@@ -1535,6 +1610,7 @@ mod tests {
             0,
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
+            &std::collections::BTreeMap::new(),
             &mut imports,
             mpsc::channel(4).0,
             Arc::new(Notify::new()),
@@ -1571,6 +1647,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
+            &std::collections::BTreeMap::new(),
             events,
             render_notify,
             render_dirty,
@@ -1610,6 +1687,7 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
+            &std::collections::BTreeMap::new(),
             events,
             render_notify,
             render_dirty,

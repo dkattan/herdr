@@ -1412,6 +1412,7 @@ pub struct AppState {
     pub kitty_graphics_enabled: bool,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
+    pub agent_overrides: std::collections::BTreeMap<String, crate::config::AgentOverrideConfig>,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
@@ -1761,6 +1762,7 @@ impl AppState {
             kitty_graphics_enabled: false,
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,
+            agent_overrides: std::collections::BTreeMap::new(),
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             accent: Color::Cyan,

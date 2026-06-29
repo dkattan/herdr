@@ -225,10 +225,15 @@ impl App {
             );
             return false;
         };
-        let Some(launch_env) = self
-            .find_pane(pane_id)
-            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id, Vec::new()))
-        else {
+        let Some(launch_env) = self.find_pane(pane_id).and_then(|(ws_idx, _)| {
+            let extra: Vec<(String, String)> = self
+                .state
+                .agent_overrides
+                .get(&plan.agent)
+                .map(|o| o.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                .unwrap_or_default();
+            self.pane_launch_env(ws_idx, pane_id, extra)
+        }) else {
             return false;
         };
 

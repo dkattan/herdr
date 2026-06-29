@@ -475,6 +475,38 @@ Session references are stored in the local Herdr session snapshot. They are not 
 
 For how native agent session restore differs from pane screen history and live handoff, see [Session state and restore](/docs/session-state/).
 
+### Per-agent command and env overrides
+
+When Herdr resumes an agent pane, it normally launches the agent's default binary (for example, `copilot --resume=<session-id>`). You can override the command and inject extra environment variables per agent:
+
+```toml
+[session.agent_overrides.copilot]
+env = { OPENAI_API_KEY = "sk-...", OPENAI_BASE_URL = "https://my-inference-box/v1" }
+```
+
+- **`command`** — replaces the agent binary name in the resume command. The resume flags (e.g. `--resume=<session-id>`) are preserved. Only the first token of the command is replaced. This is useful when you run an agent through a wrapper script that provides default arguments or environment variables.
+- **`env`** — a map of environment variables injected into the pane's shell process when the agent is resumed. The variables are inherited by the agent process launched inside that shell. This is useful for pointing an agent at a local or self-hosted inference endpoint without modifying the agent's own configuration.
+
+Agent names match the detected agent labels: `copilot`, `claude`, `codex`, `cursor`, `devin`, `droid`, `kimi`, `pi`, `omp`, `hermes`, `opencode`, `qodercli`, `kilo`.
+
+#### Using env vars only
+
+If you only need to inject environment variables (e.g. to use a local inference endpoint), omit `command`:
+
+```toml
+[session.agent_overrides.copilot]
+env = { OPENAI_BASE_URL = "http://localhost:8080/v1" }
+```
+
+#### Using a wrapper script
+
+If you need to pass default arguments or set up the environment before launching the agent, use `command` to point to a wrapper script:
+
+```toml
+[session.agent_overrides.copilot]
+command = "my-copilot-wrapper"
+```
+
 ## IME cursor tracking
 
 When the focused pane hides its cursor and paints its own — common in AI-agent TUIs like Claude Code, pi, codex, and Devin — macOS native input methods stop tracking the candidate window position because the outer terminal stops reporting the cursor.

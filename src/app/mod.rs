@@ -398,6 +398,7 @@ impl App {
                 &config.terminal.default_shell,
                 config.terminal.shell_mode,
                 config.session.resume_agents_on_restore,
+                &config.session.agent_overrides,
                 event_tx.clone(),
                 render_notify.clone(),
                 render_dirty.clone(),
@@ -621,6 +622,7 @@ impl App {
             kitty_graphics_enabled: config.experimental.kitty_graphics,
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
+            agent_overrides: config.session.agent_overrides.clone(),
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             accent: crate::config::parse_color(&config.ui.accent),
@@ -761,6 +763,7 @@ impl App {
             config.advanced.scrollback_limit_bytes,
             &config.terminal.default_shell,
             config.terminal.shell_mode,
+            &config.session.agent_overrides,
             imports,
             app.event_tx.clone(),
             app.render_notify.clone(),
@@ -1458,6 +1461,10 @@ impl App {
             self.state.default_shell = config.terminal.default_shell.clone();
             self.state.shell_mode = config.terminal.shell_mode;
             self.state.new_terminal_cwd = config.terminal.new_cwd.clone();
+        }
+
+        if !invalid_section("session") {
+            self.state.agent_overrides = config.session.agent_overrides.clone();
         }
 
         if !invalid_section("worktrees") {

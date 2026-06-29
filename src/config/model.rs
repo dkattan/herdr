@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -241,18 +244,49 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
 }
 
+/// Per-agent launch overrides applied when restoring/resuming agent panes.
+///
+/// ```toml
+/// [session.agent_overrides.copilot]
+/// command = "my-copilot-wrapper"
+/// env = { OPENAI_API_KEY = "sk-...", OPENAI_BASE_URL = "https://..." }
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentOverrideConfig {
+    /// Replace the agent binary name with this command when resuming.
+    /// For example, set to `"my-copilot-wrapper"` to launch a wrapper script
+    /// instead of the bare `copilot` binary.
+    pub command: String,
+
+    /// Extra environment variables injected into the pane when resuming
+    /// this agent.
+    pub env: BTreeMap<String, String>,
+}
+
+impl AgentOverrideConfig {
+    #[allow(dead_code)] // kept for potential future use in filtering
+    pub fn is_empty(&self) -> bool {
+        self.command.is_empty() && self.env.is_empty()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
     /// when restoring a Herdr session. Default: true.
     pub resume_agents_on_restore: bool,
+    /// Per-agent overrides for the resume command and environment.
+    /// Keys are agent names like `copilot`, `claude`, `codex`, etc.
+    pub agent_overrides: BTreeMap<String, AgentOverrideConfig>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             resume_agents_on_restore: true,
+            agent_overrides: BTreeMap::new(),
         }
     }
 }
@@ -1166,6 +1200,7 @@ new_cwd = "~/Projects"
     fn resume_agents_on_restore_defaults_on_and_parses() {
         let default_config = Config::default();
         assert!(default_config.session.resume_agents_on_restore);
+        assert!(default_config.session.agent_overrides.is_empty());
 
         let toml = r#"
 [session]
@@ -1173,6 +1208,60 @@ resume_agents_on_restore = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.session.resume_agents_on_restore);
+    }
+
+    #[test]
+    fn agent_overrides_parse_command_and_env() {
+        let toml = r#"
+[session.agent_overrides.copilot]
+command = "my-copilot-wrapper"
+env = { OPENAI_API_KEY = "sk-secret", OPENAI_BASE_URL = "https://api.example.com" }
+
+[session.agent_overrides.claude]
+command = "my-clude"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let copilot = config
+            .session
+            .agent_overrides
+            .get("copilot")
+            .expect("copilot override");
+        assert_eq!(copilot.command, "my-copilot-wrapper");
+        assert_eq!(
+            copilot.env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("sk-secret")
+        );
+        assert_eq!(
+            copilot.env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("https://api.example.com")
+        );
+
+        let claude = config
+            .session
+            .agent_overrides
+            .get("claude")
+            .expect("claude override");
+        assert_eq!(claude.command, "my-clude");
+        assert!(claude.env.is_empty());
+
+        assert!(config.session.agent_overrides.get("codex").is_none());
+    }
+
+    #[test]
+    fn agent_overrides_default_empty() {
+        let toml = r#"
+[session.agent_overrides.copilot]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let copilot = config
+            .session
+            .agent_overrides
+            .get("copilot")
+            .expect("copilot override entry exists");
+        assert!(copilot.is_empty());
+        assert!(copilot.command.is_empty());
+        assert!(copilot.env.is_empty());
     }
 
     #[test]
