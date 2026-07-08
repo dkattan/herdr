@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -64,7 +67,9 @@ pub enum ToastDelivery {
     System,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema, Default,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToastHerdrPosition {
     TopLeft,
@@ -102,6 +107,23 @@ impl AgentPanelSortConfig {
             Self::Priority => "priority",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostCursorModeConfig {
+    #[default]
+    Auto,
+    Native,
+    Drawn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarCollapsedModeConfig {
+    #[default]
+    Compact,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -222,23 +244,54 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
 }
 
+/// Per-agent launch overrides applied when restoring/resuming agent panes.
+///
+/// ```toml
+/// [session.agent_overrides.copilot]
+/// command = "my-copilot-wrapper"
+/// env = { OPENAI_API_KEY = "sk-...", OPENAI_BASE_URL = "https://..." }
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentOverrideConfig {
+    /// Replace the agent binary name with this command when resuming.
+    /// For example, set to `"my-copilot-wrapper"` to launch a wrapper script
+    /// instead of the bare `copilot` binary.
+    pub command: String,
+
+    /// Extra environment variables injected into the pane when resuming
+    /// this agent.
+    pub env: BTreeMap<String, String>,
+}
+
+impl AgentOverrideConfig {
+    #[allow(dead_code)] // kept for potential future use in filtering
+    pub fn is_empty(&self) -> bool {
+        self.command.is_empty() && self.env.is_empty()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
     /// when restoring a Herdr session. Default: true.
     pub resume_agents_on_restore: bool,
+    /// Per-agent overrides for the resume command and environment.
+    /// Keys are agent names like `copilot`, `claude`, `codex`, etc.
+    pub agent_overrides: BTreeMap<String, AgentOverrideConfig>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             resume_agents_on_restore: true,
+            agent_overrides: BTreeMap::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigReloadStatus {
     Applied,
@@ -761,10 +814,14 @@ pub struct UiConfig {
     pub sidebar_min_width: u16,
     /// Maximum sidebar width (columns) when expanded. Default: 36.
     pub sidebar_max_width: u16,
+    /// Collapsed sidebar presentation. Default: compact.
+    pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
     pub mouse_capture: bool,
+    /// Host cursor policy. Default: auto.
+    pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
     pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,
     /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
@@ -781,6 +838,8 @@ pub struct UiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Hide the tab row when the workspace has one tab. Default: false.
+    pub hide_tab_bar_when_single_tab: bool,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -830,8 +889,8 @@ pub struct AdvancedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Add a keepalive fallback under the user's ssh config for the `--remote`
-    /// bridge. Set false to run plain ssh unchanged. Default: true.
+    /// Add keepalive fallbacks and private connection reuse for `herdr --remote`.
+    /// Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
 }
 
@@ -961,8 +1020,10 @@ impl Default for UiConfig {
             sidebar_width: 26,
             sidebar_min_width: 18,
             sidebar_max_width: 36,
+            sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
+            host_cursor: HostCursorModeConfig::Auto,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
@@ -971,6 +1032,7 @@ impl Default for UiConfig {
             pane_borders: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
+            hide_tab_bar_when_single_tab: false,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1138,6 +1200,7 @@ new_cwd = "~/Projects"
     fn resume_agents_on_restore_defaults_on_and_parses() {
         let default_config = Config::default();
         assert!(default_config.session.resume_agents_on_restore);
+        assert!(default_config.session.agent_overrides.is_empty());
 
         let toml = r#"
 [session]
@@ -1145,6 +1208,60 @@ resume_agents_on_restore = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.session.resume_agents_on_restore);
+    }
+
+    #[test]
+    fn agent_overrides_parse_command_and_env() {
+        let toml = r#"
+[session.agent_overrides.copilot]
+command = "my-copilot-wrapper"
+env = { OPENAI_API_KEY = "sk-secret", OPENAI_BASE_URL = "https://api.example.com" }
+
+[session.agent_overrides.claude]
+command = "my-clude"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+
+        let copilot = config
+            .session
+            .agent_overrides
+            .get("copilot")
+            .expect("copilot override");
+        assert_eq!(copilot.command, "my-copilot-wrapper");
+        assert_eq!(
+            copilot.env.get("OPENAI_API_KEY").map(String::as_str),
+            Some("sk-secret")
+        );
+        assert_eq!(
+            copilot.env.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("https://api.example.com")
+        );
+
+        let claude = config
+            .session
+            .agent_overrides
+            .get("claude")
+            .expect("claude override");
+        assert_eq!(claude.command, "my-clude");
+        assert!(claude.env.is_empty());
+
+        assert!(config.session.agent_overrides.get("codex").is_none());
+    }
+
+    #[test]
+    fn agent_overrides_default_empty() {
+        let toml = r#"
+[session.agent_overrides.copilot]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let copilot = config
+            .session
+            .agent_overrides
+            .get("copilot")
+            .expect("copilot override entry exists");
+        assert!(copilot.is_empty());
+        assert!(copilot.command.is_empty());
+        assert!(copilot.env.is_empty());
     }
 
     #[test]
@@ -1182,17 +1299,20 @@ agent_panel_scope = "current"
         assert!(default_config.ui.pane_borders);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
+        assert!(!default_config.ui.hide_tab_bar_when_single_tab);
 
         let toml = r#"
 [ui]
 pane_borders = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
+hide_tab_bar_when_single_tab = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.pane_borders);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
+        assert!(config.ui.hide_tab_bar_when_single_tab);
     }
 
     #[test]
@@ -1306,6 +1426,25 @@ mobile_width_threshold = 96
         assert_eq!(config.ui.sidebar_min_width, 12);
         assert_eq!(config.ui.sidebar_max_width, 80);
         assert_eq!(config.ui.mobile_width_threshold, 96);
+    }
+
+    #[test]
+    fn sidebar_collapsed_mode_defaults_compact_and_parses_hidden() {
+        let default_config = Config::default();
+        assert_eq!(
+            default_config.ui.sidebar_collapsed_mode,
+            SidebarCollapsedModeConfig::Compact
+        );
+
+        let toml = r#"
+[ui]
+sidebar_collapsed_mode = "hidden"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.ui.sidebar_collapsed_mode,
+            SidebarCollapsedModeConfig::Hidden
+        );
     }
 
     #[test]

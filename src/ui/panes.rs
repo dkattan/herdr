@@ -21,18 +21,13 @@ pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
-fn pane_border_title(label: &str, pane_width: u16, focused: bool) -> Option<String> {
+fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
     let label = label.trim();
     if label.is_empty() || pane_width <= 4 {
         return None;
     }
-    if focused {
-        let max_label_width = pane_width.saturating_sub(5) as usize;
-        Some(format!("▌ {} ", truncate_end(label, max_label_width)))
-    } else {
-        let max_label_width = pane_width.saturating_sub(4) as usize;
-        Some(format!(" {} ", truncate_end(label, max_label_width)))
-    }
+    let max_label_width = pane_width.saturating_sub(4) as usize;
+    Some(format!(" {} ", truncate_end(label, max_label_width)))
 }
 
 fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
@@ -802,7 +797,7 @@ mod tests {
         );
         assert_eq!(
             pane_border_title(" claude ", 20, true).as_deref(),
-            Some("▌ claude ")
+            Some(" claude ")
         );
         assert_eq!(pane_border_title("", 20, false), None);
         assert_eq!(
@@ -811,7 +806,7 @@ mod tests {
         );
         assert_eq!(
             pane_border_title("abcdef", 8, true).as_deref(),
-            Some("▌ ab… ")
+            Some(" abc… ")
         );
         assert_eq!(pane_border_title("abcdef", 4, false), None);
     }
@@ -829,8 +824,10 @@ mod tests {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
         app.view.terminal_area = Rect::new(0, 0, 12, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
         app.view.pane_infos = vec![PaneInfo {
-            id: PaneId::from_raw(1),
+            id: pane_id,
             rect: Rect::new(0, 0, 12, 3),
             inner_rect: Rect::default(),
             scrollbar_rect: None,
@@ -838,10 +835,7 @@ mod tests {
             is_focused: false,
         }];
 
-        let ws = Workspace::test_new("test");
-        let terminal_id = ws.tabs[0].panes[&PaneId::from_raw(1)]
-            .attached_terminal_id
-            .clone();
+        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
         let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
         terminal_state.set_manual_label("1 模块组织（已定）".into());
         app.terminals.insert(terminal_id, terminal_state);
